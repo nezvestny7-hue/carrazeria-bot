@@ -1,0 +1,3 @@
+BOT_TOKEN = "8151810817:AAHxg8cyDL41rnU1FLyXNJQOpUvzkTj9vdI"
+KANAL_ID = "-1001399882341"  # Boshiga -100 qo'shildi!      
+KANAL_LINK = "https://t.me/sirojov_aaa"
