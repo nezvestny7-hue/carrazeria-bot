@@ -1,3 +1,156 @@
+import os
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, FSInputFile
+from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from mutagen.easyid3 import EasyID3
+from pydub import AudioSegment
+
+# --- SIZNING SOZLAMALARINGIZ ---
 BOT_TOKEN = "8151810817:AAHxg8cyDL41rnU1FLyXNJQOpUvzkTj9vdI"
-KANAL_ID = "-1001399882341"  # Boshiga -100 qo'shildi!      
-KANAL_LINK = "https://t.me/sirojov_aaa"
+KANAL_ID = "-1001399882341"        
+KANAL_LINK = "https://t.me/sirojov_aaa"  
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+class BotStates(StatesGroup):
+    waiting_for_effect_choice = State()
+    waiting_for_artist = State()
+    waiting_for_title = State()
+
+# --- CARROZZERIA "CONCERT HALL" EFFEKTI FUNKSIYASI ---
+def apply_concert_hall_effect(file_path):
+    sound = AudioSegment.from_file(file_path, format="mp3")
+    
+    # 1-aks-sado: 140ms kechikish bilan
+    echo_delay1 = 140 
+    echo_volume1 = -11
+    echo1 = sound - abs(echo_volume1)
+    echo1 = AudioSegment.silent(duration=echo_delay1) + echo1
+    hall_sound = sound.overlay(echo1)
+    
+    # 2-aks-sado: 280ms kechikish bilan
+    echo_delay2 = 280
+    echo_volume2 = -18
+    echo2 = sound - abs(echo_volume2)
+    echo2 = AudioSegment.silent(duration=echo_delay2) + echo2
+    
+    final_sound = hall_sound.overlay(echo2)
+    final_sound.export(file_path, format="mp3")
+
+# --- MAJBURIY OBUNA TEKSHIRUVCHI FUNKSIYA ---
+async def check_subscription(user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=KANAL_ID, user_id=user_id)
+        if member.status in ["creator", "administrator", "member"]:
+            return True
+        return False
+    except Exception:
+        return False
+
+def subscription_keyboard():
+    buttons = [
+        [InlineKeyboardButton(text="📢 Kanalga obuna bo'lish", url=KANAL_LINK)],
+        [InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_sub")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def effect_keyboard():
+    buttons = [
+        [InlineKeyboardButton(text="🎵 Carrozzeria: Concert Hall", callback_data="eff_carrozzeria")],
+        [InlineKeyboardButton(text="📝 Shunchaki nomini o'zgartirish", callback_data="eff_normal")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# --- BOT BUYRUQLARI ---
+@dp.message(CommandStart())
+async def start_cmd(message: Message):
+    if not await check_subscription(message.from_user.id):
+        await message.answer("⚠️ Botdan foydalanish uchun avval kanalimizga obuna bo'ling!", reply_markup=subscription_keyboard())
+        return
+    await message.answer("Salom! Menga biror `.mp3` musiqa yuboring, uni chinakamiga o'zgartiramiz! 🎧")
+
+@dp.callback_query(F.data == "check_sub")
+async def callback_check_sub(call: CallbackQuery):
+    if await check_subscription(call.from_user.id):
+        await call.message.delete()
+        await call.message.answer("🎉 Rahmat! Endi menga bemalol musiqa yuborishingiz mumkin. 🎵")
+    else:
+        await call.answer("❌ Siz hali kanalga obuna bo'lmadingiz!", show_alert=True)
+
+@dp.message(F.audio)
+async def handle_audio(message: Message, state: FSMContext):
+    if not await check_subscription(message.from_user.id):
+        await message.answer("⚠️ Musiqani qayta ishlash uchun avval kanalimizga a'zo bo'ling!", reply_markup=subscription_keyboard())
+        return
+
+    file_id = message.audio.file_id
+    file_name = message.audio.file_name or "audio.mp3"
+    await state.update_data(file_id=file_id, file_name=file_name)
+    
+    await message.answer("Ushbu musiqa uchun rejimni tanlang:", reply_markup=effect_keyboard())
+    await state.set_state(BotStates.waiting_for_effect_choice)
+
+@dp.callback_query(BotStates.waiting_for_effect_choice, F.data.startswith("eff_"))
+async def process_effect_choice(call: CallbackQuery, state: FSMContext):
+    await state.update_data(effect=call.data)
+    await call.message.delete()
+    await call.message.answer("Yaxshi! Endi musiqaning yangi **ijrochisini** (Artist) kiriting:")
+    await state.set_state(BotStates.waiting_for_artist)
+
+@dp.message(BotStates.waiting_for_artist)
+async def process_artist(message: Message, state: FSMContext):
+    await state.update_data(artist=message.text)
+    await message.answer("Ajoyib! Endi musiqaning yangi **nomini** (Title) kiriting:")
+    await state.set_state(BotStates.waiting_for_title)
+
+@dp.message(BotStates.waiting_for_title)
+async def process_title(message: Message, state: FSMContext):
+    user_data = await state.get_data()
+    title = message.text
+    artist = user_data['artist']
+    effect = user_data['effect']
+    file_id = user_data['file_id']
+    file_name = user_data['file_name']
+    
+    status_msg = await message.answer("⏳ Musiqa serverga yuklanmoqda va qayta ishlanmoqda...")
+    custom_path = f"track_{message.from_user.id}_{file_name}"
+    
+    try:
+        file = await bot.get_file(file_id)
+        await bot.download_file(file.file_path, custom_path)
+        
+        if effect == "eff_carrozzeria":
+            await status_msg.edit_text("🎛 Carrozzeria 919 SFC: Concert Hall effekti berilmoqda...")
+            apply_concert_hall_effect(custom_path)
+            caption_text = "🎵 Carrozzeria 919: Concert Hall effekti qo'shildi!"
+        else:
+            caption_text = "📝 Musiqa teglari muvaffaqiyatli o'zgartirildi!"
+            
+        try:
+            audio = EasyID3(custom_path)
+        except Exception:
+            from mutagen.mp3 import MP3
+            audio = MP3(custom_path, ID3=EasyID3)
+            audio.add_tags(ID3=EasyID3)
+            audio = EasyID3(custom_path)
+            
+        audio['artist'] = artist
+        audio['title'] = title
+        audio.save()
+        
+        edited_audio = FSInputFile(custom_path, filename=f"{artist} - {title}.mp3")
+        await message.reply_audio(audio=edited_audio, caption=caption_text, performer=artist, title=title)
+    except Exception as e:
+        await message.answer(f"❌ Xatolik yuz berdi: {str(e)}")
+    finally:
+        if os.path.exists(custom_path):
+            os.remove(custom_path)
+        await status_msg.delete()
+        await state.clear()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(dp.start_polling(bot))
